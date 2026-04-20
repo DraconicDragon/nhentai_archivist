@@ -1,4 +1,4 @@
-name: "On Tag Deploy on GitHub"
+name: "Build and Release Linux Binary"
 
 env:
   REPO_NAME: "nhentai_archivist"
@@ -10,9 +10,12 @@ on:
       - "*"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build_and_release:
-    name: "Build Linux Executable and Release"
+    name: "Build Linux Binary"
     runs-on: ubuntu-latest
 
     steps:
@@ -26,41 +29,35 @@ jobs:
         with:
           toolchain: ${{ env.RUST_VERSION }}
 
-      - name: "Get Version"
-        id: version
-        run: |
-          project_version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
-          echo "version=$project_version" >> "$GITHUB_OUTPUT"
-
-      - name: "Verify Tag Matches Cargo Version"
-        run: |
-          if [ "${{ github.ref_name }}" != "${{ steps.version.outputs.version }}" ]; then
-            echo "Tag (${{ github.ref_name }}) does not match Cargo version (${{ steps.version.outputs.version }})"
-            exit 1
-          fi
-
       - name: "Build Linux Executable"
         run: cargo build --release
 
-      - name: "Prepare Artifact Name"
-        id: artifact
+      - name: "Set Release Info"
+        id: meta
         run: |
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG_NAME="${GITHUB_REF_NAME}"
+          else
+            TAG_NAME="manual-$(date +'%Y.%m.%d-%H%M%S')"
+          fi
+
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
           echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
           echo "binary_path=target/release/${{ env.REPO_NAME }}" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=${{ env.REPO_NAME }}-${{ github.ref_name }}-linux" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${{ env.REPO_NAME }}-$TAG_NAME-linux" >> "$GITHUB_OUTPUT"
 
       - name: "Upload Workflow Artifact"
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.artifact.outputs.artifact_name }}
-          path: ${{ steps.artifact.outputs.binary_path }}
+          name: ${{ steps.meta.outputs.artifact_name }}
+          path: ${{ steps.meta.outputs.binary_path }}
 
       - name: "Create GitHub Release"
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
-          name: "${{ steps.artifact.outputs.date }} ${{ env.REPO_NAME }} ${{ github.ref_name }}"
+          tag_name: ${{ steps.meta.outputs.tag_name }}
+          name: "${{ steps.meta.outputs.date }} ${{ env.REPO_NAME }} ${{ steps.meta.outputs.tag_name }}"
           generate_release_notes: true
-          files: ${{ steps.artifact.outputs.binary_path }}
+          files: ${{ steps.meta.outputs.binary_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
