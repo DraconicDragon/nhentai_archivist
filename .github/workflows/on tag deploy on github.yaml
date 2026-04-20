@@ -11,13 +11,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  initialisation:
-    name: "Initialisation"
+  build_and_release:
+    name: "Build Linux Executable and Release"
     runs-on: ubuntu-latest
-
-    outputs:
-      TAG: ${{ steps.tag.outputs.TAG }}
-      TODAY: ${{ steps.today.outputs.TODAY }}
 
     steps:
       - name: "Checkout Repository"
@@ -25,76 +21,46 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: "Get Tag"
-        id: tag
-        run: echo "TAG=$(git describe --tags --abbrev=0)" >> "$GITHUB_OUTPUT"
-
-      - name: "Get Date"
-        id: today
-        run: echo "TODAY=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
-
-  build_linux:
-    name: "Build Linux Executable"
-    needs: initialisation
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: "Checkout Repository"
-        uses: actions/checkout@v4
-
       - name: "Install Rust"
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
-          target: x86_64-unknown-linux-gnu
 
-      - name: "Build"
-        run: cargo build --release --target x86_64-unknown-linux-gnu
+      - name: "Get Version"
+        id: version
+        run: |
+          project_version=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')
+          echo "version=$project_version" >> "$GITHUB_OUTPUT"
 
-      - name: "Upload Build Artifact"
+      - name: "Verify Tag Matches Cargo Version"
+        run: |
+          if [ "${{ github.ref_name }}" != "${{ steps.version.outputs.version }}" ]; then
+            echo "Tag (${{ github.ref_name }}) does not match Cargo version (${{ steps.version.outputs.version }})"
+            exit 1
+          fi
+
+      - name: "Build Linux Executable"
+        run: cargo build --release
+
+      - name: "Prepare Artifact Name"
+        id: artifact
+        run: |
+          echo "date=$(date +'%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+          echo "binary_path=target/release/${{ env.REPO_NAME }}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=${{ env.REPO_NAME }}-${{ github.ref_name }}-linux" >> "$GITHUB_OUTPUT"
+
+      - name: "Upload Workflow Artifact"
         uses: actions/upload-artifact@v4
         with:
-          name: linux-binary
-          path: ./target/x86_64-unknown-linux-gnu/release/${{ env.REPO_NAME }}
+          name: ${{ steps.artifact.outputs.artifact_name }}
+          path: ${{ steps.artifact.outputs.binary_path }}
 
-  create_release:
-    name: "Create GitHub Release"
-    needs: [initialisation, build_linux]
-    runs-on: ubuntu-latest
-
-    outputs:
-      upload_url: ${{ steps.release.outputs.upload_url }}
-
-    steps:
-      - name: "Create Release"
-        id: release
-        uses: actions/create-release@v1
+      - name: "Create GitHub Release"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "${{ steps.artifact.outputs.date }} ${{ env.REPO_NAME }} ${{ github.ref_name }}"
+          generate_release_notes: true
+          files: ${{ steps.artifact.outputs.binary_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: "${{ needs.initialisation.outputs.TODAY }} ${{ env.REPO_NAME }} ${{ needs.initialisation.outputs.TAG }}"
-          draft: false
-          prerelease: false
-
-  upload_release_asset:
-    name: "Upload Linux Binary to Release"
-    needs: [initialisation, create_release]
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: "Download Artifact"
-        uses: actions/download-artifact@v4
-        with:
-          name: linux-binary
-          path: ./dist
-
-      - name: "Upload Asset"
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ needs.create_release.outputs.upload_url }}
-          asset_path: ./dist/${{ env.REPO_NAME }}
-          asset_name: "${{ needs.initialisation.outputs.TODAY }} ${{ env.REPO_NAME }} ${{ needs.initialisation.outputs.TAG }} linux"
-          asset_content_type: application/octet-stream
